@@ -10,12 +10,33 @@
 " ---------------------------------------------------------------------
 
 " initialize Variables {{{1
-let s:unicode_URL  = get(g:, 'Unicode_URL',
-        \ 'http://www.unicode.org/Public/UNIDATA/UnicodeData.txt')
-let s:directory    = expand("<sfile>:p:h")."/unicode"
-let s:UniFile      = s:directory . '/UnicodeData.txt'
+let s:directory = expand("<sfile>:p:h") . "/unicode"
+
+let s:unicodeFileUrls = {
+\    'UnicodeData':
+\        'http://www.unicode.org/Public/UNIDATA/UnicodeData.txt', 
+\    'DerivedCoreProperties':
+\        'http://unicode.org/Public/UNIDATA/DerivedCoreProperties.txt',
+\    'Scripts':
+\        'http://unicode.org/Public/UNIDATA/Scripts.txt',
+\    'PropList':
+\        'http://unicode.org/Public/UNIDATA/PropList.txt'
+\}
+
+let s:unicodeFileNames = {
+\    'UnicodeData':
+\        s:directory . '/UnicodeData.txt',
+\    'DerivedCoreProperties':
+\        s:directory . '/DerivedCoreProperties.txt',
+\    'Scripts':
+\        s:directory . '/Scripts.txt',
+\    'PropList':
+\        s:directory . '/PropList.txt'
+\}
+
 " patch 7.3.713 introduced the %S modifier for printf
 let s:printf_S_mod = (v:version == 703 && !has("patch713")) || v:version < 703
+
 " patch 7.4.2008 introduced evalcmd function
 let s:execute = exists("*execute")
 
@@ -52,44 +73,96 @@ fu! unicode#UnicodeName(val) "{{{2
     return <sid>GetUnicodeName(a:val)
 endfu
 fu! unicode#Download(force) "{{{2
-    if (!filereadable(s:UniFile) || (getfsize(s:UniFile) == 0)) || a:force
-        if !a:force
-            call s:WarningMsg("File " . s:UniFile . " does not exist or is zero.")
-        else
-            call s:WarningMsg("Updating ". s:UniFile)
-        endif
-        call s:WarningMsg("Let's see, if we can download it.")
-        call s:WarningMsg("If this doesn't work, you should download ")
-        call s:WarningMsg(s:unicode_URL . " and save it as " . s:UniFile)
-        sleep 5
-        " remove cache file
-        " (will be re-created later)
-        if filereadable(s:directory. '/UnicodeData.vim')
-            call delete(s:directory. '/UnicodeData.vim')
-        endif
-        if exists(":Nread")
-            sp +enew
-            " Use the default download method. You can specify a different
-            " one, using :let g:netrw_http_cmd="wget"
-            if isdirectory(s:directory)
-                exe ":lcd " . s:directory
+
+    " Get files to download
+    let filesToDownload = []
+    if a:force
+        let filesToDownload = keys(s:unicodeFileUrls)
+    else
+        for file in keys(s:unicodeFileUrls)
+            if (!filereadable(s:unicodeFileNames[file]) || 
+               \ (getfsize(s:unicodeFileNames[file]) == 0))
+                let filesToDownload += file
             endif
-            exe "0Nread " . s:unicode_URL
-            $d _
-            exe ":noa :keepalt :sil w! " . s:UniFile
-            if getfsize(s:UniFile)==0
-                call s:WarningMsg("Error fetching File from ". s:unicode_URL)
-                return 0
-            endif
-            bw
-        else
-            call s:WarningMsg("NetRw not loaded; cannot download file")
-            call s:WarningMsg("Please download " . s:unicode_URL)
-            call s:WarningMsg("and save it as " . s:UniFile)
-            call s:WarningMsg("Quitting")
+        endfor
+    endif
+
+    if len(filesToDownload) == 0
+        return 1
+    endif
+
+    if !exists(":Nread")
+        let msg = "NetRw is not loaded. Please download the following "
+        let msg .= len(filesToDownload) == 1? "file" : "files"
+        let msg .= " and save "
+        let msg .= len(filesToDownload) == 1? "it" : "them"
+        let msg .= " in:"
+        call s:WarningMsg(msg)
+        call s:WarningMsg("    " . s:directory)
+        for file in filesToDownload
+            call s:WarningMsg("    * " . s:unicodeFileUrls[file])
+        endfor
+        call s:WarningMsg("Press a key to return.")
+        call getchar()
+        return 0
+    endif
+
+    let msg = "The following "
+    let msg .= len(filesToDownload) == 1? "file" : "files"
+    let msg .= " will be downloaded:"
+    call s:WarningMsg(msg)
+    for file in filesToDownload
+        call s:WarningMsg("    * " . s:unicodeFileUrls[file])
+    endfor
+    let msg = "If the download fails, please save "
+    let msg .= len(filesToDownload) == 1? "it" : "them"
+    let msg .= " in:"
+    call s:WarningMsg(msg)
+    call s:WarningMsg("    " . s:directory)
+    call s:WarningMsg("Press a key to continue...")
+    call getchar()
+
+    " Remove cache file (it will be re-created later any way)
+    if filereadable(s:directory. '/UnicodeData.vim')
+        call delete(s:directory. '/UnicodeData.vim')
+    endif
+
+    " Remove the need to press a key at each file.
+    let g:netrw_silent = 1
+
+    for file in filesToDownload
+
+        " Split current window in two and create a new buffer in it.
+        split +enew
+
+        " Switch the local directory
+        if isdirectory(s:directory)
+            execute ":lcd " . s:directory
+        endif
+
+        " =0 mode reads a remote file and insert it before the current
+        " line.
+        execute "0Nread " . s:unicodeFileUrls[file]
+
+        " Deletes the last line of the file to the blackhole register.
+        " Reading a remote file's contents into the current buffer
+        " inserts an extra line terminator, which we have to delete to
+        " keep the contents matching
+        $d _
+
+        " :noautocommand :keepalt: preserve as much relevant state as
+        " possible
+        " :silent write!: force the write and hide the command itself
+        execute ":noa :keepalt :sil w! " . s:unicodeFileNames[file]
+
+        if getfsize(s:unicodeFileNames[file]) == 0
+            call s:WarningMsg("Error fetching File from " . s:unicodeFileUrls[file])
             return 0
         endif
-    endif
+
+        bwipeout
+
+    endfor
     return 1
 endfu
 " internal functions {{{1
@@ -185,7 +258,7 @@ fu! unicode#GetUniChar(...) "{{{2
             if empty(s:UniDict)
                 call add(msg,
                     \ printf("Can't determine char under cursor,".
-                    \ "%s not found", s:UniFile))
+                    \ "%s not found", s:unicodeFileNames['UnicodeData']))
                 return
             endif
         endif
@@ -669,37 +742,123 @@ fu! <sid>GetDigraphChars(code) "{{{2
     return (empty(list) ? '' : '('. join(list). ')')
 endfu
 fu! <sid>UnicodeDict() "{{{2
-    let dict={}
-    " make sure unicodedata.txt is found
-    if <sid>CheckDir()
-        let uni_cache_file = s:directory. '/UnicodeData.vim'
-        if filereadable(uni_cache_file) &&
-            \ getftime(uni_cache_file) > getftime(s:UniFile) &&
-            \ getfsize(uni_cache_file) > 100 " Unicode Cache Dict should be a lot larger
-            exe "source" uni_cache_file
-            let dict=g:unicode#unicode#data
-            unlet! g:unicode#unicode#data
-        else
-            let list=readfile(s:UniFile)
-            let ind = []
-            for glyph in list
-                let val          = split(glyph, ";")
-                let Name         = val[1]
-                let OldName      = val[10] " Unicode_1_Name field (10)
-                if Name[0] ==? '<' && OldName !=? ''
-                    let Name = split(OldName, '(')[0]
-                endif
-                if Name[-1:] ==# ' '
-                    let Name = substitute(Name, ' *$', '', '')
-                endif
-                let dec = ('0x'.val[0])+0 " faster than str2nr()
-                let dict[dec]   = Name
-                let ind += [dec] " faster than add
-            endfor
-            call <sid>UnicodeWriteCache(dict, ind)
-        endif
+    let data = {}
+
+    " Make sure the unicode directory and files are found.
+    if !<sid>CheckDir()
+        return data
     endif
-    return dict
+
+    " Restore unicode data from the unicode cache file.
+    let uni_cache_file = s:directory . '/UnicodeData.vim'
+    if filereadable(uni_cache_file) &&
+        \ getftime(uni_cache_file) > getftime(s:unicodeFileNames['UnicodeData']) &&
+        " Unicode Cache data should be a lot larger
+        \ getfsize(uni_cache_file) > 100 
+        execute "source" uni_cache_file
+        let data = g:unicode#unicode#data
+        unlet! g:unicode#unicode#data
+        return data
+    endif
+
+    let charProps = {}
+
+    let data.charProps = charProps
+
+    let charProps.Any = range(0x0, 0x10ffff)
+    let charProps.Assigned = []
+    let charProps.ASCII = range(0x0, 0x007f)
+    let charProps.NEWLINE = [0x0a]
+    let charProps.Cn = []
+
+    let codePoints = []
+    let codePointsWithNames = []
+    let codePointBegin = 0
+    let codePointEnd = 0
+    let unicodeDataList = readfile(s:unicodeFileNames['UnicodeData'])
+    for line in unicodeDataList
+
+        let fields = split(line, ";")
+        echom line
+
+        " Get code point string to number. An addition (implicit cast) is
+        " faster than str2nr(). The result is a decimal number convertion from
+        " the hexadecimal value.
+        let codePoint = ('0x' . fields[0]) + 0
+
+        let name = fields[1]
+
+        " Unicode_1_name field (10)
+        let oldName = fields[10] 
+
+        if name =~ "^<.*,\\s*First>$"
+            let codePointBegin = codePoint
+            continue
+
+        elseif name =~ "^<.*,\\s*Last>$"
+            let codePoints = range(codePointBegin, codePoint)
+            " Do not need to convert to hexadecimal at this point.
+            " call map(codePoints, "printf(\"0x%04x\", v:val)")
+
+        else
+            let codePointBegin = codePoint
+            let codePoints = [codePoint]
+
+            " If this concerns a character without a specified name
+            " (<something>), then we look for the old name removing the name
+            " in parentheses. Special character ranges are not taken into
+            " account because they do not have an old name since this is
+            " a range.
+            if name[0] ==? '<' && oldName !=? ''
+                let name = split(oldName, '(')[0]
+            endif
+
+            " Remove trailing spaces from the name, if any.
+            if name[-1:] ==# ' '
+                let name = substitute(name, ' *$', '', '')
+            endif
+
+            let data[codePoint] = name
+
+            " An addition is faster than calling add()
+            let codePointsWithNames += [codePoint]
+        endif
+
+        " The Cn category represents unassigned characters. These are not
+        " listed in UnicodeData.txt so we must derive them by looking for
+        " 'holes' in the range of listed codepoints.
+        let charProps.Cn += range(codePointEnd + 1, codePointBegin)
+
+        " Using get is equivalent to this ternary. Need to profile for speed
+        " since we are in a big loop.
+        " has_key(charProps, 'Assigned') ? charProps.Assigned += codePoints : charProps.Assigned = codepoints
+        let charProps.Assigned = get(charProps, 'Assigned', []) + codePoints
+
+        " The third field denotes the 'General' category, e.g. Lu
+        let charProps[fields[2]] = get(charProps, fields[2], []) + codePoints
+
+        let charProps[fields[2][0:0]] = get(charProps, fields[2][0:0], []) + codePoints
+
+        let codePointEnd = codePoint
+    endfor
+
+    " The last Cn codepoint should be 0x10ffff. If it's not, append the
+    " missing codepoints to Cn and C
+    let charProps.Cn += range(codePointEnd + 1, 0x10ffff)
+    let charProps.C = charProps.Cn + get(charProps, 'C', [])
+
+    " LC = Ll + Lt + Lu
+    let charProps.LC = get(charProps, 'LC', []) + charProps.Ll + charProps.Lt + charProps.Lu
+
+    let posixNames = ['NEWLINE', 'Alpha', 'Blank', 'Cntrl', 'Digit', 'Graph',
+    'Lower', 'Print', 'XPosixPunct', 'Space', 'Upper', 'XDigit', 'Word',
+    'Alnum', 'ASCII', 'Punct']
+
+    let generalGroups = filter(keys(charProps), "index(posixName, v:val) ==-1")
+    echom keys(charProps)
+
+    call <sid>UnicodeWriteCache(data, codePointsWithNames)
+    return data
 endfu
 fu! <sid>CheckDir() "{{{2
     try
